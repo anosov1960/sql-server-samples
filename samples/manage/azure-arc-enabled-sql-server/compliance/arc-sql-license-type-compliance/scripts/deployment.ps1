@@ -1,5 +1,5 @@
 param(
-  [Parameter(Mandatory = $true)]
+  [Parameter(Mandatory = $false)]
   [ValidateNotNullOrEmpty()]
   [string]$ManagementGroupId,
 
@@ -22,6 +22,11 @@ param(
   [Parameter(Mandatory = $false)]
   [switch]$SkipManagedIdentityRoleAssignment
 )
+
+if (-not $PSBoundParameters.ContainsKey('ManagementGroupId')) {
+  $ManagementGroupId = (Get-AzContext).Tenant.Id
+  Write-Output "ManagementGroupId not specified. Using tenant root management group: $ManagementGroupId"
+}
 
 $AssignmentScope = "/providers/Microsoft.Management/managementGroups/$ManagementGroupId"
 
@@ -55,14 +60,9 @@ else {
 $PolicyDefinitionName = "activate-sql-arc-$LicenseToken-$PlatformToken"
 $PolicyAssignmentName = "sql-arc-$LicenseToken-$PlatformToken"
 
-if ($TargetLicenseType -eq 'PAYG') {
-  $PolicyDefinitionDisplayName = "Arc-enabled SQL Server ($PlatformLabel) license type to 'Pay-as-you-go'"
-  $PolicyAssignmentDisplayName = "Arc-enabled SQL Server ($PlatformLabel) license type to 'Pay-as-you-go'"
-}
-else {
-  $PolicyDefinitionDisplayName = "Set Arc-enabled SQL Server ($PlatformLabel) license type to 'License With Software Assurance'"
-  $PolicyAssignmentDisplayName = "Set Arc-enabled SQL Server ($PlatformLabel) license type to 'License With Software Assurance'"
-}
+$LicenseTypeLabel = if ($TargetLicenseType -eq 'PAYG') { 'Pay-as-you-go' } else { 'License With Software Assurance' }
+$PolicyDefinitionDisplayName = "Configure Arc-enabled SQL Server ($PlatformLabel) license type to '$LicenseTypeLabel'"
+$PolicyAssignmentDisplayName = "Configure Arc-enabled SQL Server ($PlatformLabel) license type to '$LicenseTypeLabel'"
 
 #Create policy definition
 New-AzPolicyDefinition `
@@ -109,13 +109,29 @@ if (-not $SkipManagedIdentityRoleAssignment) {
       -ErrorAction SilentlyContinue
 
     if (-not $existingRole) {
-      New-AzRoleAssignment `
-        -ObjectId $principalId `
-        -RoleDefinitionName $requiredRoleName `
-        -Scope $AssignmentScope `
-        -ErrorAction Stop | Out-Null
+      $maxRetries = 5
+      $retryDelay = 10
+      for ($i = 1; $i -le $maxRetries; $i++) {
+        try {
+          New-AzRoleAssignment `
+            -ObjectId $principalId `
+            -RoleDefinitionName $requiredRoleName `
+            -Scope $AssignmentScope `
+            -ErrorAction Stop | Out-Null
 
-      Write-Output "Assigned '$requiredRoleName' to policy assignment identity ($principalId) at scope $AssignmentScope."
+          Write-Output "Assigned '$requiredRoleName' to policy assignment identity ($principalId) at scope $AssignmentScope."
+          break
+        }
+        catch {
+          if ($_.Exception.Message -match 'Conflict') {
+            Write-Output "Assigned '$requiredRoleName' to policy assignment identity ($principalId) at scope $AssignmentScope (confirmed after retry)."
+            break
+          }
+          if ($i -eq $maxRetries) { throw }
+          Write-Output "Waiting ${retryDelay}s for identity replication before assigning '$requiredRoleName' ($i/$maxRetries)..."
+          Start-Sleep -Seconds $retryDelay
+        }
+      }
     }
     else {
       Write-Output "Policy assignment identity already has '$requiredRoleName' at scope $AssignmentScope."

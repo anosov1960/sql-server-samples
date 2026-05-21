@@ -1,8 +1,8 @@
 {
-  "displayName": "Set Arc-enabled SQL Server license type to 'License With Software Assurance'",
+  "displayName": "Configure Arc-enabled SQL Server license type",
   "policyType": "Custom",
   "mode": "Indexed",
-  "description": "This policy sets the license type for Arc-enabled SQL Server to 'License With Software Assurance'.  ",
+  "description": "This policy configures the license type for Arc-enabled SQL Server extensions to a specified target value.",
   "metadata": {
     "category": ""
   },
@@ -112,6 +112,26 @@
                 {
                   "value": "[length(intersection(field('Microsoft.HybridCompute/machines/extensions/settings'), createObject('LicenseType', parameters('targetLicenseType'))))]",
                   "equals": 1
+                },
+                {
+                  "anyOf": [
+                    {
+                      "value": "[parameters('targetLicenseType')]",
+                      "notEquals": "PAYG"
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "value": "[parameters('targetLicenseType')]",
+                          "equals": "PAYG"
+                        },
+                        {
+                          "field": "Microsoft.HybridCompute/machines/extensions/settings",
+                          "ContainsKey": "ConsentToRecurringPAYG"
+                        }
+                      ]
+                    }
+                  ]
                 }
               ]
             },
@@ -156,6 +176,10 @@
                 {
                   "value": "[contains(parameters('licenseTypesToOverwrite'), 'PAYG')]",
                   "equals": false
+                },
+                {
+                  "field": "Microsoft.HybridCompute/machines/extensions/settings",
+                  "ContainsKey": "ConsentToRecurringPAYG"
                 }
               ]
             },
@@ -214,14 +238,29 @@
                   "metadata": {
                     "description": "LicenseType value to set on the extension."
                   }
+                },
+                "consentTimestamp": {
+                  "type": "string",
+                  "defaultValue": "[utcNow('yyyy-MM-ddTHH:mm:ssZ')]",
+                  "metadata": {
+                    "description": "UTC timestamp for recurring PAYG consent. Auto-generated at deployment time."
+                  }
                 }
               },
               "functions": [],
               "variables": {
                 "vmExtensionPublisher": "Microsoft.AzureData",
-                "licenseSettings": {
+                "baseSettings": {
                   "LicenseType": "[parameters('targetLicenseType')]"
-                }
+                },
+                "paygConsentSettings": {
+                  "LicenseType": "[parameters('targetLicenseType')]",
+                  "ConsentToRecurringPAYG": {
+                    "Consented": true,
+                    "ConsentTimestamp": "[parameters('consentTimestamp')]"
+                  }
+                },
+                "licenseSettings": "[if(equals(parameters('targetLicenseType'), 'PAYG'), variables('paygConsentSettings'), variables('baseSettings'))]"
               },
               "resources": [
                 {
